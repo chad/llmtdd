@@ -40,8 +40,15 @@ Respond only with the TypeScript code that should go in the source file, nothing
                 messages=[{"role": "user", "content": prompt}]
             )
             
+            code = response.content[0].text
+            # Remove markdown code blocks if present
+            if code.startswith('```') and code.endswith('```'):
+                code = code.split('\n', 1)[1].rsplit('\n', 1)[0]
+            elif code.startswith('```typescript'):
+                code = code.split('\n', 1)[1].rsplit('```', 1)[0]
+                
             with open(src_path, 'w') as f:
-                f.write(response.content[0].text)
+                f.write(code)
                 
             result = subprocess.run(['npm', 'test', test_path], capture_output=True, text=True, cwd=test_path.parent.parent)
             
