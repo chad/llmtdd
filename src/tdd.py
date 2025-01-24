@@ -6,6 +6,9 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 import anthropic
 import subprocess
+from colorama import init, Fore, Style
+
+init(autoreset=True)  # Initialize colorama
 
 class TestWatcher(FileSystemEventHandler):
     def __init__(self, project_root: Path):
@@ -15,7 +18,7 @@ class TestWatcher(FileSystemEventHandler):
         
     def on_modified(self, event):
         if not event.is_directory and event.src_path.endswith('.test.ts'):
-            print(event)
+            print(f"{Fore.CYAN}Detected change in{Style.BRIGHT} {event.src_path}")
             time.sleep(1)  # Wait for file writes to complete
             self.process_test_file(Path(event.src_path))
             
@@ -53,11 +56,11 @@ Respond only with the TypeScript code that should go in the source file, nothing
             result = subprocess.run(['npm', 'test', test_path], capture_output=True, text=True, cwd=test_path.parent.parent)
             
             if result.returncode == 0:
-                print(f"✓ Tests passing for {test_path.name}")
+                print(f"{Fore.GREEN}✓ Tests passing for {Style.BRIGHT}{test_path.name}")
                 success = True
             else:
-                print(f"✗ Tests failed (attempt {attempts + 1}/{max_attempts})")
-                print(result.stderr)
+                print(f"{Fore.RED}✗ Tests failed {Style.BRIGHT}(attempt {attempts + 1}/{max_attempts})")
+                print(f"{Fore.RED}{result.stderr}")
                 attempts += 1
 
 def main():
@@ -71,7 +74,7 @@ def main():
         src_dir = project_root / 'src'
         
         if not project_root.exists():
-            print(f"Error: Project directory '{project_root}' does not exist")
+            print(f"{Fore.RED}Error: Project directory '{project_root}' does not exist")
             sys.exit(1)
         
         if not all(d.exists() for d in [test_dir, src_dir]):
@@ -83,8 +86,8 @@ def main():
         observer.schedule(event_handler, str(test_dir), recursive=False)
         observer.start()
         
-        print(f"Watching for TypeScript test files in {test_dir}")
-        print("Press Ctrl+C to exit")
+        print(f"{Fore.CYAN}Watching for TypeScript test files in {Style.BRIGHT}{test_dir}")
+        print(f"{Fore.YELLOW}Press Ctrl+C to exit")
         
         while True:
             time.sleep(1)
