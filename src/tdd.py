@@ -33,15 +33,25 @@ class TestWatcher(FileSystemEventHandler):
         max_attempts = 5
         
         while not success and attempts < max_attempts:
-            prompt = f"""Given these TypeScript tests, generate production code that will make them pass:
+            failure_context = f"\nPrevious attempt failed with:\n{result.stderr}" if attempts > 0 else ""
+            
+            prompt = f"""Given these TypeScript tests, generate production code that will make them pass:{failure_context}
+
 {test_content}
 Respond only with the TypeScript code that should go in the source file, nothing else."""
+            print(f"\n{Fore.MAGENTA}Attempt {attempts + 1}/{max_attempts}: Asking Claude to generate code...")
+            if attempts > 0:
+                print(f"{Fore.YELLOW}Including previous error feedback:{Style.DIM}\n{result.stderr}")
+                
             response = self.claude.messages.create(
                 model="claude-3-opus-20240229",
                 max_tokens=1500,
                 temperature=0,
                 messages=[{"role": "user", "content": prompt}]
             )
+            
+            print(f"{Fore.MAGENTA}Claude generated {len(response.content[0].text)} characters of code")
+            print(f"{Fore.CYAN}Running tests...")
             
             code = response.content[0].text
             # Remove markdown code blocks if present
