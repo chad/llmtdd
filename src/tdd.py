@@ -1,16 +1,16 @@
 import os
 import time
+import sys
 from pathlib import Path
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 import anthropic
 import subprocess
-import json
 
 class TestWatcher(FileSystemEventHandler):
-    def __init__(self, test_dir: Path, src_dir: Path):
-        self.test_dir = test_dir
-        self.src_dir = src_dir
+    def __init__(self, project_root: Path):
+        self.test_dir = project_root / 'tests'
+        self.src_dir = project_root / 'src'
         self.claude = anthropic.Anthropic(api_key=os.environ["CLAUDE_KEY"])
         
     def on_modified(self, event):
@@ -20,11 +20,9 @@ class TestWatcher(FileSystemEventHandler):
             self.process_test_file(Path(event.src_path))
             
     def process_test_file(self, test_path: Path):
-        # Read the test file
         with open(test_path) as f:
             test_content = f.read()
             
-        # Generate corresponding source file path
         src_path = self.src_dir / test_path.name.replace('.test.ts', '.ts')
         
         success = False
@@ -32,13 +30,9 @@ class TestWatcher(FileSystemEventHandler):
         max_attempts = 5
         
         while not success and attempts < max_attempts:
-            # Generate production code
             prompt = f"""Given these TypeScript tests, generate production code that will make them pass:
-
 {test_content}
-
 Respond only with the TypeScript code that should go in the source file, nothing else."""
-
             response = self.claude.messages.create(
                 model="claude-3-opus-20240229",
                 max_tokens=1500,
@@ -46,34 +40,38 @@ Respond only with the TypeScript code that should go in the source file, nothing
                 messages=[{"role": "user", "content": prompt}]
             )
             
-            # Save generated code
             with open(src_path, 'w') as f:
                 f.write(response.content[0].text)
                 
-            # Run tests
-            result = subprocess.run(['npm', 'test', test_path], capture_output=True, text=True)
+            result = subprocess.run(['npm', 'test', test_path], capture_output=True, text=True, cwd=test_path.parent.parent)
             
             if result.returncode == 0:
-                print(f"✅ Tests passing for {test_path.name}")
+                print(f"✓ Tests passing for {test_path.name}")
                 success = True
             else:
-                print(f"❌ Tests failed (attempt {attempts + 1}/{max_attempts})")
+                print(f"✗ Tests failed (attempt {attempts + 1}/{max_attempts})")
                 print(result.stderr)
                 attempts += 1
 
 def main():
+    if len(sys.argv) != 2:
+        print("Usage: tdd.py <project_directory>")
+        sys.exit(1)
+
     try:
-        # Configure paths
-        test_dir = Path('./tests')
-        print(test_dir.resolve())
-        src_dir = Path('./src')
+        project_root = Path(sys.argv[1]).resolve()
+        test_dir = project_root / 'tests'
+        src_dir = project_root / 'src'
         
-        # Ensure directories exist
-        test_dir.mkdir(exist_ok=True)
-        src_dir.mkdir(exist_ok=True)
+        if not project_root.exists():
+            print(f"Error: Project directory '{project_root}' does not exist")
+            sys.exit(1)
         
-        # Set up file watching
-        event_handler = TestWatcher(test_dir, src_dir)
+        if not all(d.exists() for d in [test_dir, src_dir]):
+            print(f"Error: Project must contain both 'tests' and 'src' directories")
+            sys.exit(1)
+        
+        event_handler = TestWatcher(project_root)
         observer = Observer()
         observer.schedule(event_handler, str(test_dir), recursive=False)
         observer.start()
