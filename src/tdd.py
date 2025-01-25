@@ -1,32 +1,58 @@
 import os
 import time
 import sys
+import subprocess
 from pathlib import Path
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 import anthropic
-import subprocess
 from colorama import init, Fore, Style
 
 init(autoreset=True)  # Initialize colorama
 
+def run_command(command: list[str], cwd: Path) -> subprocess.CompletedProcess:
+    """Executes a command and returns the result."""
+    try:
+        start_time = time.time()
+        print(f"{Fore.BLUE}Executing command: {Style.BRIGHT}{' '.join(command)}")
+        result = subprocess.run(command, capture_output=True, text=True, cwd=cwd, check=False)
+        elapsed_time = time.time() - start_time
+        print(f"{Fore.BLUE}Command finished in: {elapsed_time:.2f}s")
+        return result
+    except FileNotFoundError:
+        print(f"{Fore.RED}Error: Command not found: {' '.join(command)}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"{Fore.RED}Error running command {command}: {e}")
+        sys.exit(1)
+
+def extract_code_from_response(code: str) -> str:
+    """Extracts code from Claude response, removing markdown blocks."""
+    if code.startswith("```") and code.endswith("```"):
+        code = code.split("\n", 1)[1].rsplit("\n", 1)[0]
+    elif code.startswith("```typescript"):
+        code = code.split("\n", 1)[1].rsplit("```", 1)[0]
+    return code
+
 class TestWatcher(FileSystemEventHandler):
     def __init__(self, project_root: Path):
-        self.test_dir = project_root / 'tests'
-        self.src_dir = project_root / 'src'
+        self.test_dir = project_root.joinpath('tests')
+        self.src_dir = project_root.joinpath('src')
         self.claude = anthropic.Anthropic(api_key=os.environ["CLAUDE_KEY"])
-        
+
     def on_modified(self, event):
         if not event.is_directory and event.src_path.endswith('.test.ts'):
-            print(f"{Fore.CYAN}Detected change in{Style.BRIGHT} {event.src_path}")
+            print(f"{Fore.CYAN}Detected change in {Style.BRIGHT}{event.src_path}")
             time.sleep(1)  # Wait for file writes to complete
             self.process_test_file(Path(event.src_path))
-            
+
     def process_test_file(self, test_path: Path):
+        print(f"{Fore.YELLOW}Processing {Style.BRIGHT}{test_path.name}")
+        
         with open(test_path) as f:
             test_content = f.read()
             
-        src_path = self.src_dir / test_path.name.replace('.test.ts', '.ts')
+        src_path = self.src_dir.joinpath(test_path.name.replace('.test.ts', '.ts'))
         
         success = False
         attempts = 0
@@ -36,13 +62,13 @@ class TestWatcher(FileSystemEventHandler):
             failure_context = f"\nPrevious attempt failed with:\n{result.stderr}" if attempts > 0 else ""
             
             prompt = f"""Given these TypeScript tests, generate production code that will make them pass:{failure_context}
-
+            
 {test_content}
 Respond only with the TypeScript code that should go in the source file, nothing else."""
             print(f"\n{Fore.MAGENTA}Attempt {attempts + 1}/{max_attempts}: Asking Claude to generate code...")
             if attempts > 0:
                 print(f"{Fore.YELLOW}Including previous error feedback:{Style.DIM}\n{result.stderr}")
-                
+            
             response = self.claude.messages.create(
                 model="claude-3-opus-20240229",
                 max_tokens=1500,
@@ -51,37 +77,36 @@ Respond only with the TypeScript code that should go in the source file, nothing
             )
             
             print(f"{Fore.MAGENTA}Claude generated {len(response.content[0].text)} characters of code")
-            print(f"{Fore.CYAN}Running tests...")
+           
+            code = extract_code_from_response(response.content[0].text)
             
-            code = response.content[0].text
-            # Remove markdown code blocks if present
-            if code.startswith('```') and code.endswith('```'):
-                code = code.split('\n', 1)[1].rsplit('\n', 1)[0]
-            elif code.startswith('```typescript'):
-                code = code.split('\n', 1)[1].rsplit('```', 1)[0]
-                
+            if not src_path.exists():
+              print(f"{Fore.CYAN}Creating new file {Style.BRIGHT}{src_path}")
+            
             with open(src_path, 'w') as f:
                 f.write(code)
                 
-            result = subprocess.run(['npm', 'test', test_path], capture_output=True, text=True, cwd=test_path.parent.parent)
+            print(f"{Fore.CYAN}Running tests...")
+            result = run_command(['npm', 'test', str(test_path)], test_path.parent.parent)
             
             if result.returncode == 0:
                 print(f"{Fore.GREEN}✓ Tests passing for {Style.BRIGHT}{test_path.name}")
                 success = True
             else:
                 print(f"{Fore.RED}✗ Tests failed {Style.BRIGHT}(attempt {attempts + 1}/{max_attempts})")
-                print(f"{Fore.RED}{result.stderr}")
+                print(f"{Fore.RED}Command: {' '.join(['npm', 'test', str(test_path)])}")
+                print(f"{Fore.RED}Error message: {result.stderr}")
                 attempts += 1
 
 def main():
     if len(sys.argv) != 2:
         print("Usage: tdd.py <project_directory>")
         sys.exit(1)
-
+    
     try:
         project_root = Path(sys.argv[1]).resolve()
-        test_dir = project_root / 'tests'
-        src_dir = project_root / 'src'
+        test_dir = project_root.joinpath('tests')
+        src_dir = project_root.joinpath('src')
         
         if not project_root.exists():
             print(f"{Fore.RED}Error: Project directory '{project_root}' does not exist")
