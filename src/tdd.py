@@ -48,6 +48,7 @@ def extract_code_from_response(response: str) -> str:
 def hash_file_content(content: str) -> str:
     """Generates an SHA-256 hash of the file content."""
     return hashlib.sha256(content.encode()).hexdigest()
+
 class TestWatcher(FileSystemEventHandler):
     def __init__(self, project_root: Path):
         self.test_dir = project_root.joinpath('tests')
@@ -81,25 +82,21 @@ class TestWatcher(FileSystemEventHandler):
         max_attempts = 5
         result = None  # Initialize result variable here
         error_messages = ""
+        failed_tests = []
 
         while not success and attempts < max_attempts:
-
-            prompt_prefix = f"""Implement the following TypeScript tests. Do not include any other text except the code itself."""
+            prompt_prefix = f"""Implement the following TypeScript code to pass the provided tests. Do not include any other text except the code itself."""
 
             if error_messages:
-                prompt_prefix = f"""Implement the following TypeScript tests, and be sure to export the necessary functions/types to make the tests pass.  Do not include any other text except the code itself. The previous attempt failed with the following errors: {error_messages}
-
-                Specifically, ensure that any module that needs to be imported by another module is exported from that module.  If any test fails due to a missing export, be sure to export the missing member from that module."""
+                prompt_prefix = f"""Implement the following TypeScript code to pass the provided tests. Do not include any other text except the code itself. The previous attempt failed with the following tests: {', '.join(failed_tests)} and the following errors: {error_messages}.  You must implement the tests to match the expected output as described by the tests."""
 
             prompt = f"""{prompt_prefix}
 
 {test_content}"""
 
-
             print(f"\n{Fore.MAGENTA}Attempt {attempts + 1}/{max_attempts}: Asking Claude to generate code...")
             if attempts > 0 and result:
-               print(f"{Fore.YELLOW}Including previous error feedback:{Style.DIM}\n{result.stderr}")
-
+                print(f"{Fore.YELLOW}Including previous error feedback:{Style.DIM}\n{result.stderr}")
 
             response = self.claude.messages.create(
                 model="claude-3-opus-20240229",
@@ -121,7 +118,16 @@ class TestWatcher(FileSystemEventHandler):
                     del self.cache[test_hash]  # Clear cache if tests fail
 
                 error_messages = result.stderr
+                error_messages = error_messages.replace("\n", " ") # reduce verbose errors
 
+                failed_tests = self.extract_failing_test_names(result.stderr)
+            attempts += 1 # Increment attempts here
+
+    def extract_failing_test_names(self, stderr: str) -> list[str]:
+      """Extracts the names of the failing tests from the stderr output."""
+      test_name_regex = re.compile(r"●\s+([A-Za-z0-9\s`_]+)\s+›.*", re.MULTILINE)
+      matches = test_name_regex.findall(stderr)
+      return [match.strip() for match in matches]
 
     def write_code_and_run_tests(self, test_path: Path, code: str, test_hash: str) -> subprocess.CompletedProcess:
         src_path = self.src_dir.joinpath(test_path.name.replace('.test.ts', '.ts'))
