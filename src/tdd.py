@@ -59,22 +59,29 @@ class TestWatcher(FileSystemEventHandler):
         self.claude = anthropic.Anthropic(api_key=os.environ["CLAUDE_KEY"])
         self.cache = {}  # Cache to store file content hashes and generated code
         self.initial_run_complete = False
+        self.test_status = {} # keep track of the tests, which pass, and which fail
 
     def on_modified(self, event):
-       if self.initial_run_complete:
-        if not event.is_directory and event.src_path.endswith('.test.ts'):
-            print(f"{Fore.CYAN}Detected change in {Style.BRIGHT}{event.src_path}")
-            time.sleep(1)
-            self.process_test_file(Path(event.src_path))
+        if self.initial_run_complete:
+            if not event.is_directory and event.src_path.endswith('.test.ts'):
+                print(f"{Fore.CYAN}Detected change in {Style.BRIGHT}{event.src_path}")
+                time.sleep(1)
+                self.process_test_file(Path(event.src_path))
 
     def initial_test_run(self):
-        print(f"{Fore.CYAN}Running initial tests...")
-        result = run_command(['npm', 'test'], self.test_dir.parent)
-        if result.returncode != 0:
-             self.process_test_failures(result)
-        else:
-             print(f"{Fore.GREEN}All tests passed in initial run.")
-        self.initial_run_complete = True
+         print(f"{Fore.CYAN}Running initial tests...")
+         result = run_command(['npm', 'test'], self.test_dir.parent)
+         if result.returncode != 0:
+            self.process_test_failures(result)
+         else:
+            print(f"{Fore.GREEN}All tests passed in initial run.")
+            all_test_files = [f for f in self.test_dir.glob('*.test.ts') if f.is_file()]
+            for test_path in all_test_files:
+                with open(test_path) as f:
+                    test_content = f.read()
+                test_hash = hash_file_content(test_content)
+                self.test_status[test_hash] = [self.extract_test_names_from_content(test_content),{}]
+         self.initial_run_complete = True
 
     def process_test_failures(self, result: subprocess.CompletedProcess):
         global DEBUG_MODE
@@ -82,137 +89,88 @@ class TestWatcher(FileSystemEventHandler):
         error_messages = result.stderr
         error_messages = error_messages.replace("\n", " ")
         failed_tests = self.extract_failing_test_names(result.stderr)
-        
+
         all_test_files = [f for f in self.test_dir.glob('*.test.ts') if f.is_file()]
-        
+
         for test_path in all_test_files:
              with open(test_path) as f:
                 test_content = f.read()
+             test_hash = hash_file_content(test_content)
+             test_names = self.extract_test_names_from_content(test_content)
 
-             src_path = self.src_dir.joinpath(test_path.name.replace('.test.ts', '.ts'))
+             if test_hash not in self.test_status:
+                self.test_status[test_hash] = [test_names, {}]
 
-             success = False
-             attempts = 0
-             max_attempts = 5
+             for test_name in test_names:
+                if test_name in failed_tests and (test_name not in self.test_status[test_hash][1] or self.test_status[test_hash][1][test_name] == "fail"):
+                     self.process_single_test(test_path, test_name, test_content, test_hash)
 
-             while not success and attempts < max_attempts:
-                  prompt_prefix = f"""Implement the following TypeScript code to pass the provided tests. Do not include any other text except the code itself."""
+    def process_single_test(self, test_path: Path, test_name: str, test_content: str, test_hash: str):
+            global DEBUG_MODE
+            src_path = self.src_dir.joinpath(test_path.name.replace('.test.ts', '.ts'))
+            success = False
+            attempts = 0
+            max_attempts = 5
+            result = None
 
-                  if error_messages:
-                    prompt_prefix = f"""Implement the following TypeScript code to pass the provided tests. Do not include any other text except the code itself. The previous attempt failed with the following tests: {', '.join(failed_tests)} and the following errors: {error_messages}.  
-                    
-Ensure that your code is implemented in such a way that the output matches the expected output as described in the tests."""
+            while not success and attempts < max_attempts:
+                prompt_prefix = f"""Implement the following TypeScript code to pass the test: {test_name}. Do not include any other text except the code itself."""
 
-                  prompt = f"""{prompt_prefix}
+                prompt = f"""{prompt_prefix}
 
 {test_content}"""
 
-                  print(f"\n{Fore.MAGENTA}Attempt {attempts + 1}/{max_attempts}: Asking Claude to generate code...")
-
-                  if DEBUG_MODE:
+                print(f"\n{Fore.MAGENTA}Attempt {attempts + 1}/{max_attempts}: Asking Claude to generate code for test: {test_name}...")
+                if DEBUG_MODE:
                     print(f"{Fore.MAGENTA}{Style.BRIGHT}---DEBUG: Prompt sent to Claude---{Style.RESET_ALL}")
                     print(f"{Fore.WHITE}{prompt}{Style.RESET_ALL}")
 
-
-                  response = self.claude.messages.create(
+                response = self.claude.messages.create(
                     model="claude-3-opus-20240229",
                     max_tokens=1500,
                     temperature=0,
                     messages=[{"role": "user", "content": prompt}]
-                  )
+                )
+                if DEBUG_MODE:
+                     print(f"{Fore.MAGENTA}{Style.BRIGHT}---DEBUG: Response received from Claude---{Style.RESET_ALL}")
+                     print(f"{Fore.WHITE}{response.content[0].text}{Style.RESET_ALL}")
 
-                  if DEBUG_MODE:
-                    print(f"{Fore.MAGENTA}{Style.BRIGHT}---DEBUG: Response received from Claude---{Style.RESET_ALL}")
-                    print(f"{Fore.WHITE}{response.content[0].text}{Style.RESET_ALL}")
+                print(f"{Fore.MAGENTA}Claude generated {len(response.content[0].text)} characters of code")
 
-                  print(f"{Fore.MAGENTA}Claude generated {len(response.content[0].text)} characters of code")
-                  code = extract_code_from_response(response.content[0].text)
-                  result = self.write_code_and_run_tests(test_path, code, hash_file_content(test_content))
-                  if result.returncode == 0:
-                      success = True
-                  else:
-                      print(f"{Fore.RED}Test failed after code generation.")
-                      error_messages = result.stderr
-                      error_messages = error_messages.replace("\n", " ")
-                      failed_tests = self.extract_failing_test_names(result.stderr)
-                  attempts += 1
+                code = extract_code_from_response(response.content[0].text)
+                result = self.write_code_and_run_tests(test_path, code, test_hash, test_name)
 
-
+                if result.returncode == 0:
+                    self.test_status[test_hash][1][test_name] = "pass" # Track status
+                    success = True
+                else:
+                    self.test_status[test_hash][1][test_name] = "fail"
+                    print(f"{Fore.RED}Test {test_name} failed after code generation.")
+                attempts += 1
 
     def process_test_file(self, test_path: Path):
-        global DEBUG_MODE
-        print(f"{Fore.YELLOW}Processing {Style.BRIGHT}{test_path.name}")
+            global DEBUG_MODE
+            print(f"{Fore.YELLOW}Processing {Style.BRIGHT}{test_path.name}")
 
-        with open(test_path) as f:
-            test_content = f.read()
+            with open(test_path) as f:
+                 test_content = f.read()
 
-        test_hash = hash_file_content(test_content)
+            test_hash = hash_file_content(test_content)
+            test_names = self.extract_test_names_from_content(test_content)
 
-        if test_hash in self.cache:
-            print(f"{Fore.GREEN}Cache hit for {Style.BRIGHT}{test_path.name}")
-            cached_code = self.cache[test_hash]
-            self.write_code_and_run_tests(test_path, cached_code, test_hash)
-            return
-
-        src_path = self.src_dir.joinpath(test_path.name.replace('.test.ts', '.ts'))
-        success = False
-        attempts = 0
-        max_attempts = 5
-        result = None  # Initialize result variable here
-        error_messages = ""
-        failed_tests = []
-
-        while not success and attempts < max_attempts:
-            prompt_prefix = f"""Implement the following TypeScript code to pass the provided tests. Do not include any other text except the code itself."""
-
-            if error_messages:
-                 prompt_prefix = f"""Implement the following TypeScript code to pass the provided tests. Do not include any other text except the code itself. The previous attempt failed with the following tests: {', '.join(failed_tests)} and the following errors: {error_messages}.  
-                 
-Ensure that your code is implemented in such a way that the output matches the expected output as described in the tests."""
+            if test_hash not in self.test_status:
+                self.test_status[test_hash] = [test_names, {}]
 
 
-            prompt = f"""{prompt_prefix}
+            for test_name in test_names:
+                if test_name not in self.test_status[test_hash][1] or self.test_status[test_hash][1][test_name] == "fail":
+                   self.process_single_test(test_path, test_name, test_content, test_hash)
 
-{test_content}"""
-
-
-            print(f"\n{Fore.MAGENTA}Attempt {attempts + 1}/{max_attempts}: Asking Claude to generate code...")
-            if attempts > 0 and result:
-                print(f"{Fore.YELLOW}Including previous error feedback:{Style.DIM}\n{result.stderr}")
-
-            if DEBUG_MODE:
-                print(f"{Fore.MAGENTA}{Style.BRIGHT}---DEBUG: Prompt sent to Claude---{Style.RESET_ALL}")
-                print(f"{Fore.WHITE}{prompt}{Style.RESET_ALL}")
-
-            response = self.claude.messages.create(
-                model="claude-3-opus-20240229",
-                max_tokens=1500,
-                temperature=0,
-                messages=[{"role": "user", "content": prompt}]
-            )
-
-            if DEBUG_MODE:
-                 print(f"{Fore.MAGENTA}{Style.BRIGHT}---DEBUG: Response received from Claude---{Style.RESET_ALL}")
-                 print(f"{Fore.WHITE}{response.content[0].text}{Style.RESET_ALL}")
-
-
-            print(f"{Fore.MAGENTA}Claude generated {len(response.content[0].text)} characters of code")
-
-            code = extract_code_from_response(response.content[0].text)
-            result = self.write_code_and_run_tests(test_path, code, test_hash)
-            if result.returncode == 0:
-                self.cache[test_hash] = code  # Store in cache after successful write and test
-                success = True
-            else:
-                print(f"{Fore.RED}Test failed after code generation. Clearing cache for {Style.BRIGHT}{test_path.name}")
-                if test_hash in self.cache:
-                    del self.cache[test_hash]  # Clear cache if tests fail
-
-                error_messages = result.stderr
-                error_messages = error_messages.replace("\n", " ") # reduce verbose errors
-
-                failed_tests = self.extract_failing_test_names(result.stderr)
-            attempts += 1 # Increment attempts here
+    def extract_test_names_from_content(self, test_content: str) -> list[str]:
+         """Extracts the test names from the test file content"""
+         test_name_regex = re.compile(r"it\s*\(\s*['\"]([^'\"]+)['\"]", re.MULTILINE)
+         matches = test_name_regex.findall(test_content)
+         return [match.strip() for match in matches]
 
     def extract_failing_test_names(self, stderr: str) -> list[str]:
       """Extracts the names of the failing tests from the stderr output."""
@@ -220,7 +178,7 @@ Ensure that your code is implemented in such a way that the output matches the e
       matches = test_name_regex.findall(stderr)
       return [match.strip() for match in matches]
 
-    def write_code_and_run_tests(self, test_path: Path, code: str, test_hash: str) -> subprocess.CompletedProcess:
+    def write_code_and_run_tests(self, test_path: Path, code: str, test_hash: str, test_name: str) -> subprocess.CompletedProcess:
         src_path = self.src_dir.joinpath(test_path.name.replace('.test.ts', '.ts'))
 
         if not src_path.exists():
@@ -229,15 +187,15 @@ Ensure that your code is implemented in such a way that the output matches the e
         with open(src_path, 'w') as f:
             f.write(code)
 
-        print(f"{Fore.CYAN}Running tests...")
-        result = run_command(['npm', 'test', str(test_path)], test_path.parent.parent)
+        print(f"{Fore.CYAN}Running test: {test_name}")
+        result = run_command(['npm', 'test', str(test_path), '-t',  f"'{test_name}'"], test_path.parent.parent)
 
         if result.returncode == 0:
-            print(f"{Fore.GREEN}Γ£ô Tests passing for {Style.BRIGHT}{test_path.name}")
+            print(f"{Fore.GREEN}Γ£ô Test '{test_name}' passing after code generation")
         else:
-            print(f"{Fore.RED}Γ£ù Tests failed {Style.BRIGHT} after generating code with caching")
-            print(f"{Fore.RED}Command: {' '.join(['npm', 'test', str(test_path)])}")
-            print(f"{Fore.RED}Error message: {result.stderr}")
+             print(f"{Fore.RED}Γ£ù Test '{test_name}' failed after code generation")
+             print(f"{Fore.RED}Command: {' '.join(['npm', 'test', str(test_path), '-t', f'{test_name}']) }")
+             print(f"{Fore.RED}Error message: {result.stderr}")
         return result
 
 def main():
