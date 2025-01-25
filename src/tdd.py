@@ -8,6 +8,7 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 import anthropic
 from colorama import init, Fore, Style
+import re
 
 init(autoreset=True)
 
@@ -26,8 +27,6 @@ def run_command(command: list[str], cwd: Path) -> subprocess.CompletedProcess:
     except Exception as e:
         print(f"{Fore.RED}Error running command {command}: {e}")
         sys.exit(1)
-
-import re
 
 def extract_code_from_response(response: str) -> str:
     """
@@ -49,7 +48,6 @@ def extract_code_from_response(response: str) -> str:
 def hash_file_content(content: str) -> str:
     """Generates an SHA-256 hash of the file content."""
     return hashlib.sha256(content.encode()).hexdigest()
-
 class TestWatcher(FileSystemEventHandler):
     def __init__(self, project_root: Path):
         self.test_dir = project_root.joinpath('tests')
@@ -74,23 +72,34 @@ class TestWatcher(FileSystemEventHandler):
         if test_hash in self.cache:
             print(f"{Fore.GREEN}Cache hit for {Style.BRIGHT}{test_path.name}")
             cached_code = self.cache[test_hash]
-            self.write_code_and_run_tests(test_path, cached_code)
+            self.write_code_and_run_tests(test_path, cached_code, test_hash)
             return
 
         src_path = self.src_dir.joinpath(test_path.name.replace('.test.ts', '.ts'))
         success = False
         attempts = 0
         max_attempts = 5
+        result = None  # Initialize result variable here
+        error_messages = ""
 
         while not success and attempts < max_attempts:
-            failure_context = f"\nPrevious attempt failed with:\n{result.stderr}" if attempts > 0 else ""
-            prompt = f"""Given these TypeScript tests, generate production code that will make them pass:{failure_context}
 
-{test_content}
-Respond only with the TypeScript code that should go in the source file, nothing else."""
+            prompt_prefix = f"""Implement the following TypeScript tests. Do not include any other text except the code itself."""
+
+            if error_messages:
+                prompt_prefix = f"""Implement the following TypeScript tests, and be sure to export the necessary functions/types to make the tests pass.  Do not include any other text except the code itself. The previous attempt failed with the following errors: {error_messages}
+
+                Specifically, ensure that any module that needs to be imported by another module is exported from that module.  If any test fails due to a missing export, be sure to export the missing member from that module."""
+
+            prompt = f"""{prompt_prefix}
+
+{test_content}"""
+
+
             print(f"\n{Fore.MAGENTA}Attempt {attempts + 1}/{max_attempts}: Asking Claude to generate code...")
-            if attempts > 0:
-                print(f"{Fore.YELLOW}Including previous error feedback:{Style.DIM}\n{result.stderr}")
+            if attempts > 0 and result:
+               print(f"{Fore.YELLOW}Including previous error feedback:{Style.DIM}\n{result.stderr}")
+
 
             response = self.claude.messages.create(
                 model="claude-3-opus-20240229",
@@ -102,31 +111,37 @@ Respond only with the TypeScript code that should go in the source file, nothing
             print(f"{Fore.MAGENTA}Claude generated {len(response.content[0].text)} characters of code")
 
             code = extract_code_from_response(response.content[0].text)
+            result = self.write_code_and_run_tests(test_path, code, test_hash)
+            if result.returncode == 0:
+                self.cache[test_hash] = code  # Store in cache after successful write and test
+                success = True
+            else:
+                print(f"{Fore.RED}Test failed after code generation. Clearing cache for {Style.BRIGHT}{test_path.name}")
+                if test_hash in self.cache:
+                    del self.cache[test_hash]  # Clear cache if tests fail
 
-            self.write_code_and_run_tests(test_path, code)
-            self.cache[test_hash] = code # Store in cache after successful write and test
-            success = True
+                error_messages = result.stderr
 
 
-    def write_code_and_run_tests(self, test_path: Path, code: str):
+    def write_code_and_run_tests(self, test_path: Path, code: str, test_hash: str) -> subprocess.CompletedProcess:
         src_path = self.src_dir.joinpath(test_path.name.replace('.test.ts', '.ts'))
-        
+
         if not src_path.exists():
             print(f"{Fore.CYAN}Creating new file {Style.BRIGHT}{src_path}")
-        
+
         with open(src_path, 'w') as f:
             f.write(code)
-        
+
         print(f"{Fore.CYAN}Running tests...")
         result = run_command(['npm', 'test', str(test_path)], test_path.parent.parent)
-        
+
         if result.returncode == 0:
-            print(f"{Fore.GREEN}✓ Tests passing for {Style.BRIGHT}{test_path.name}")
+            print(f"{Fore.GREEN}Γ£ô Tests passing for {Style.BRIGHT}{test_path.name}")
         else:
-            print(f"{Fore.RED}✗ Tests failed {Style.BRIGHT} after generating code with caching")
+            print(f"{Fore.RED}Γ£ù Tests failed {Style.BRIGHT} after generating code with caching")
             print(f"{Fore.RED}Command: {' '.join(['npm', 'test', str(test_path)])}")
             print(f"{Fore.RED}Error message: {result.stderr}")
-
+        return result
 
 def main():
     if len(sys.argv) != 2:
