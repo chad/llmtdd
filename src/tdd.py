@@ -82,9 +82,9 @@ class TestWatcher(FileSystemEventHandler):
         error_messages = result.stderr
         error_messages = error_messages.replace("\n", " ")
         failed_tests = self.extract_failing_test_names(result.stderr)
-
+        
         all_test_files = [f for f in self.test_dir.glob('*.test.ts') if f.is_file()]
-
+        
         for test_path in all_test_files:
              with open(test_path) as f:
                 test_content = f.read()
@@ -99,7 +99,9 @@ class TestWatcher(FileSystemEventHandler):
                   prompt_prefix = f"""Implement the following TypeScript code to pass the provided tests. Do not include any other text except the code itself."""
 
                   if error_messages:
-                    prompt_prefix = f"""Implement the following TypeScript code to pass the provided tests. Do not include any other text except the code itself. The previous attempt failed with the following tests: {', '.join(failed_tests)} and the following errors: {error_messages}.  You must implement the tests to match the expected output as described by the tests."""
+                    prompt_prefix = f"""Implement the following TypeScript code to pass the provided tests. Do not include any other text except the code itself. The previous attempt failed with the following tests: {', '.join(failed_tests)} and the following errors: {error_messages}.  
+                    
+Ensure that your code is implemented in such a way that the output matches the expected output as described in the tests."""
 
                   prompt = f"""{prompt_prefix}
 
@@ -164,11 +166,15 @@ class TestWatcher(FileSystemEventHandler):
             prompt_prefix = f"""Implement the following TypeScript code to pass the provided tests. Do not include any other text except the code itself."""
 
             if error_messages:
-                prompt_prefix = f"""Implement the following TypeScript code to pass the provided tests. Do not include any other text except the code itself. The previous attempt failed with the following tests: {', '.join(failed_tests)} and the following errors: {error_messages}.  You must implement the tests to match the expected output as described by the tests."""
+                 prompt_prefix = f"""Implement the following TypeScript code to pass the provided tests. Do not include any other text except the code itself. The previous attempt failed with the following tests: {', '.join(failed_tests)} and the following errors: {error_messages}.  
+                 
+Ensure that your code is implemented in such a way that the output matches the expected output as described in the tests."""
+
 
             prompt = f"""{prompt_prefix}
 
 {test_content}"""
+
 
             print(f"\n{Fore.MAGENTA}Attempt {attempts + 1}/{max_attempts}: Asking Claude to generate code...")
             if attempts > 0 and result:
