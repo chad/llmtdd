@@ -27,13 +27,24 @@ def run_command(command: list[str], cwd: Path) -> subprocess.CompletedProcess:
         print(f"{Fore.RED}Error running command {command}: {e}")
         sys.exit(1)
 
-def extract_code_from_response(code: str) -> str:
-    """Extracts code from Claude response, removing markdown blocks."""
-    if code.startswith("```") and code.endswith("```"):
-        code = code.split("\n", 1)[1].rsplit("\n", 1)[0]
-    elif code.startswith("```typescript"):
-        code = code.split("\n", 1)[1].rsplit("```", 1)[0]
-    return code
+import re
+
+def extract_code_from_response(response: str) -> str:
+    """
+    Extracts code from a Claude response, handling various markdown code block formats.
+    If no code block is found, returns the original string.
+    """
+    # Regex to match any markdown code block (``` ... ```)
+    code_block_regex = re.compile(r'```(?:[a-zA-Z]+)?\n(.*?)\n```', re.DOTALL)
+
+    match = code_block_regex.search(response)
+    if match:
+        # Return just the content of the first code block
+        return match.group(1)
+    else:
+        # No code block found, return the full response
+        print(f"{Fore.YELLOW}Warning: No code block found in Claude response, returning full response")
+        return response
 
 def hash_file_content(content: str) -> str:
     """Generates an SHA-256 hash of the file content."""
