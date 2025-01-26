@@ -1,6 +1,3 @@
-
-
-
 import os
 import time
 import sys
@@ -140,10 +137,18 @@ class TestWatcher(FileSystemEventHandler):
 
             test_code = self.extract_test_code(test_content, test_name)
 
+            existing_code = ""
+            if src_path.exists():
+                 with open(src_path, "r") as f:
+                    existing_code = f.read()
+
+
             while not success and attempts < max_attempts:
-                prompt_prefix = f"""Implement the TypeScript code that will pass the test. Do not include any other text except the code itself. The code you generate should go in the *source file*, not the test file, and it should *not* include any tests. The code must be exported from the module."""
+                prompt_prefix = f"""Implement the TypeScript code that will pass the test. Do not include any other text except the code itself. The code you generate should go in the *source file*, not the test file, and it should *not* include any tests. The code must be exported from the module. You should modify or extend the existing code provided below, if it is provided."""
 
                 prompt = f"""{prompt_prefix}
+
+{existing_code}
 
 {test_code}"""
 
@@ -157,6 +162,10 @@ class TestWatcher(FileSystemEventHandler):
 
                 print(f"{Fore.MAGENTA}Ollama generated {len(code)} characters of code")
                 code = extract_code_from_response(code)
+
+                if existing_code:
+                   code = existing_code + "\n" + code
+
                 result = self.write_code_and_run_tests(test_path, code, test_hash, test_name)
 
                 if result.returncode == 0:
